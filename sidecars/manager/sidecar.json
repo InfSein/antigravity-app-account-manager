@@ -1,0 +1,6 @@
+{
+  "name": "manager",
+  "command": "node",
+  "args": ["main.mjs"],
+  "restart_policy": "always"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "antigravity-account-manager",
+  "version": "1.0.0",
+  "description": "Antigravity 2.0 Google 账号多账号管理器与快速切换插件",
+  "main": "sidecars/manager/main.mjs",
+  "scripts": {
+    "install-plugin": "node install.js",
+    "uninstall-plugin": "node uninstall.js",
+    "test": "node --check src/constants.js src/credential_manager.js src/account_store.js src/oauth_service.js src/account_switcher.js src/ui_script.js src/cdp_injector.js && node test_suite.js"
+  },
+  "keywords": [
+    "antigravity",
+    "account-manager",
+    "google-oauth",
+    "account-switcher"
+  ],
+  "author": "Antigravity Team",
+  "license": "MIT"
+}

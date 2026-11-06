@@ -1,0 +1,12 @@
+{
+  "name": "antigravity-account-manager",
+  "displayName": "Antigravity 账号切换器 (Account Manager)",
+  "description": "在 Antigravity 左下角设置按钮上方新增 Google 账号按钮，自动识别并保存当前登录账号，支持多账号一键切换与 Google OAuth 授权新增账号。",
+  "version": "1.0.0",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "安装并启用 Antigravity 账号切换插件",
+    "查看当前已保存的 Google 账号列表",
+    "卸载 Antigravity 账号切换插件"
+  ]
+}
