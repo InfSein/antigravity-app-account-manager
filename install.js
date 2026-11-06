@@ -1,14 +1,14 @@
 /**
  * Antigravity 账号管理插件一键安装与热注入脚本
  * 1. 同步文件到用户插件目录 ~/.gemini/config/plugins/antigravity-account-manager
- * 2. 终止任何可能运行旧代码的残留后台进程
+ * 2. 终止任何可能运行旧代码的残留后台进程并拉起最新常驻服务
  * 3. 自动导入当前登录账号并对运行中的 Antigravity 窗口执行热注入
  */
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
-const { initAccountStore, getPublicAccounts } = require('./src/account_store');
+const { execSync, spawn } = require('child_process');
+const { initAccountStore, getPublicAccounts, ensureAccountsAvatars } = require('./src/account_store');
 const { CdpInjector } = require('./src/cdp_injector');
 const { DAEMON_PID_FILE } = require('./src/constants');
 
@@ -52,6 +52,19 @@ function stopOldDaemon() {
   }
 }
 
+function startNewDaemon() {
+  const daemonScript = path.join(TARGET_DIR, 'sidecars', 'manager', 'main.mjs');
+  if (!fs.existsSync(daemonScript)) return;
+  try {
+    const child = spawn(process.execPath, [daemonScript], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    });
+    child.unref();
+  } catch {}
+}
+
 async function install() {
   console.log('=== 开始安装 Antigravity 账号管理插件 ===');
   console.log('目标目录:', TARGET_DIR);
@@ -66,6 +79,7 @@ async function install() {
   // 3. 初始化读取并保存当前登录账号
   console.log('正在读取当前已登录 Google 账号...');
   initAccountStore();
+  await ensureAccountsAvatars();
   const accountsInfo = getPublicAccounts();
   console.log(`✓ 账号读取完成，当前已保存账号数量: ${accountsInfo.accounts.length}`);
   if (accountsInfo.activeEmail) {
@@ -80,10 +94,12 @@ async function install() {
     console.log('✓ 界面已成功热注入到当前 Antigravity 窗口中！');
     setTimeout(() => {
       injector.stop();
+      startNewDaemon();
       console.log('=== 安装与同步已圆满完成 ===');
       process.exit(0);
     }, 1200);
   } catch (err) {
+    startNewDaemon();
     console.log('! 未检测到正在运行的客户端，已完成静态安装');
     process.exit(0);
   }

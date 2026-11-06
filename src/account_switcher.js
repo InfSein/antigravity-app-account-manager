@@ -27,6 +27,19 @@ function isTokenExpiring(tokens) {
 }
 
 /**
+ * 检查 Token 是否已彻底过期
+ */
+function isTokenExpired(tokens) {
+  if (!tokens || !tokens.access_token) return true;
+  if (!tokens.expiry) return false;
+  try {
+    return new Date(tokens.expiry).getTime() <= Date.now();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 切换到指定 Google 账号
  * @param {string} email 目标账号邮箱
  * @param {Function} [notifyClientFn] 可选的客户端通知回调（通过 CDP 向当前页面发送刷新信号）
@@ -43,7 +56,7 @@ async function switchAccount(email, notifyClientFn) {
 
   let validTokens = { ...tokens };
 
-  // 1. 如果 Token 即将过期，使用 refresh_token 获取新 Token
+  // 1. 如果 Token 即将过期且存在 refresh_token，尝试刷新新 Token
   if (isTokenExpiring(validTokens) && validTokens.refresh_token) {
     try {
       const refreshed = await refreshAccessToken(validTokens.refresh_token);
@@ -52,12 +65,18 @@ async function switchAccount(email, notifyClientFn) {
         access_token: refreshed.access_token,
         expiry: refreshed.expiry,
         expires_in: refreshed.expires_in,
-        token_type: refreshed.token_type
+        token_type: refreshed.token_type || 'Bearer'
       };
+      if (refreshed.id_token) {
+        validTokens.id_token = refreshed.id_token;
+      }
       // 更新回本地存储
       upsertAccount(email, '', '', validTokens);
     } catch (err) {
-      console.warn(`[AccountManager] 自动刷新 Token 失败: ${err.message}，尝试使用当前 Token 切换`);
+      if (isTokenExpired(validTokens)) {
+        throw new Error(`账号 ${email} 凭据已过期且自动刷新失败: ${err.message}，请重新通过“添加 Google 账号”登录授权该账号`);
+      }
+      console.warn(`[AccountManager] 自动刷新 Token 告警: ${err.message}，由于 Token 尚未过期，尝试使用现有凭据继续切换`);
     }
   }
 
@@ -70,7 +89,7 @@ async function switchAccount(email, notifyClientFn) {
   // 3. 更新本地活跃账号状态
   setActiveAccount(email);
 
-  // 4. 通知正在运行的 Antigravity 客户端刷新状态
+  // 4. 通知正在运行的 Antigravity 客户端及语言服务刷新状态
   if (typeof notifyClientFn === 'function') {
     try {
       await notifyClientFn(email);
@@ -84,5 +103,6 @@ async function switchAccount(email, notifyClientFn) {
 
 module.exports = {
   isTokenExpiring,
+  isTokenExpired,
   switchAccount
 };

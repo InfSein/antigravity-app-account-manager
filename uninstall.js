@@ -41,13 +41,14 @@ async function uninstall() {
     await injector.connectAndInject();
     await injector.evaluate(`
       try {
-        const btn = document.getElementById('${ACCOUNT_BTN_ID}');
-        if (btn) btn.remove();
-        const popover = document.getElementById('${POPOVER_ID}');
-        if (popover) popover.remove();
-        const style = document.getElementById('agy-account-manager-style');
-        if (style) style.remove();
-        window.__agyAccountManagerInitialized = false;
+        if (window.__agyAccountManager && typeof window.__agyAccountManager.cleanup === 'function') {
+          window.__agyAccountManager.cleanup();
+        }
+        ['${ACCOUNT_BTN_ID}', '${POPOVER_ID}', 'agy-account-manager-style', 'agy-account-confirm-modal', 'agy-account-switch-mask', 'agy-account-toast'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.remove();
+        });
+        window.__agyAccountManager = null;
       } catch(e) {}
     `);
     injector.stop();

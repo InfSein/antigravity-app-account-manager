@@ -18,9 +18,11 @@ const OAUTH_CREDS_FILE = path.join(GEMINI_CONFIG_DIR, 'oauth_creds.json');
 const ACTIVE_ACCOUNT_FILE = path.join(AGY_CONFIG_DIR, 'active-account.json');
 const QUOTA_CACHE_FILE = path.join(AGY_CONFIG_DIR, 'quota-cache.json');
 const DAEMON_PID_FILE = path.join(AGY_CONFIG_DIR, 'account-manager-daemon.pid');
+const LOG_FILE = path.join(AGY_CONFIG_DIR, 'account-manager.log');
 
-// Antigravity 调试端口与可执行文件路径
+// Antigravity 调试端口、应用状态存储与可执行文件路径
 const DEVTOOLS_PORT_FILE = path.join(APPDATA_DIR, 'Antigravity', 'DevToolsActivePort');
+const APP_STORAGE_FILE = path.join(APPDATA_DIR, 'Antigravity', 'app_storage.json');
 const AGY_PROGRAM_DIR = path.join(LOCALAPPDATA_DIR, 'Programs', 'antigravity');
 const LANGUAGE_SERVER_EXE = path.join(AGY_PROGRAM_DIR, 'resources', 'bin', 'language_server.exe');
 
@@ -64,7 +66,9 @@ module.exports = {
   ACTIVE_ACCOUNT_FILE,
   QUOTA_CACHE_FILE,
   DAEMON_PID_FILE,
+  LOG_FILE,
   DEVTOOLS_PORT_FILE,
+  APP_STORAGE_FILE,
   AGY_PROGRAM_DIR,
   LANGUAGE_SERVER_EXE,
   WIN_CRED_TARGET,

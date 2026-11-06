@@ -60,13 +60,19 @@ flowchart TD
    - 原因：Antigravity 2.0 桌面端自带 DevTools 调试端口，通过 CDP 注入既无需破坏可执行文件或 app.asar 签名，又能实现动态热更新，升级版本后依然完全兼容。
 2. **账号按钮直接插入在设置按钮上方**：
    - 原因：设置按钮（`button[data-testid="settings-button"]`）拥有完全契合 Antigravity 视觉风格的外观和响应式折叠逻辑，将其作为基准前置插入（`insertBefore`）能天然继承原有布局间距与折叠特性。
-3. **通过动态随机 `writer_id` 触发 language_server 热同步**：
-   - 原因：源码分析发现 `language_server.exe` 的 `syncWithStoredToken` 通过对比凭据存储中的 `writer_id` 来感知外部账号变动。生成新 `writer_id` 可促使其直接从凭据管理器重载 Token，避免重启整个应用。
+3. **通过动态随机 `writer_id` 配合 GetAuthStatus 触发 language_server 强制重载**：
+   - 原因：源码分析发现 `language_server.exe` 的 `syncWithStoredToken` 通过对比凭据存储中的 `writer_id` 来感知外部账号变动。通过 CDP 发起内部 RPC 触发 `validateCurrentAuth`，使语言服务立即读取更新后的凭据。
 4. **零外部 npm 依赖设计**：
    - 原因：纯利用 Node.js 22 全局 `WebSocket`、内置 `http`/`https` 及 PowerShell 原生 P/Invoke，无需 `npm install` 即可开箱即用，避免网络依赖和依赖膨胀。
 5. **系统代理自适应连接**：
    - 原因：Google OAuth API 在特定网络环境下需要经过本地代理（如 127.0.0.1:7897），通过自动读取注册表及 HTTP CONNECT 隧道代理支持，确保换取 Token 与获取用户信息 100% 畅通。
 6. **基于 Stdin 输入流的 WinCred 读写架构**：
    - 原因：Windows 命令行参数有 8191 字符上限，而 Google OAuth Token JSON 包含较大字段。通过 `src/wincred.ps1` 走标准输入流传递数据，彻底杜绝“命令行过长”异常。
-7. **客户端 LocalStorage 缓存与平滑热切换**：
-   - 原因：切换账号或初次加载时不调用破坏性的页面全量 reload，通过前端 LocalStorage 秒级渲染账号按钮，并通过 `BroadcastChannel` 广播通知后台语言服务刷新，彻底解决页面重载导致的界面丢失与卡顿问题。
+7. **客户端状态持久化与延迟平滑重载**：
+   - 原因：切换或新增账号后，仅修改凭据不足以更新前端 React 缓存和现有连接。通过将新账号写入本地存储，并延迟 600ms 调用 `window.location.reload()`，使前端页面、聊天上下文和配额信息彻底刷新并与后台语言服务保持绝对同步。
+8. **Token 严格有效性校验与过期阻断**：
+   - 原因：在账号切换时主动预先校验 Access Token，若已过期且无法自动刷新，立即向用户明确报错阻断，避免将失效 Token 写入系统导致“切换假成功”。
+9. **同步更新 `nativeStorage` / `app_storage.json` 的 `lastLoginUsername` 避免重复安全提示弹窗**：
+   - 原因：Antigravity 客户端只保存单个 `agy.onboarding.lastLoginUsername` 并与当前登录邮箱比对，一旦不一致便判定为 `account_changed` 并弹出“安全提示与数据使用说明”。在切换账号时同步更新 `app_storage.json` 与 `window.nativeStorage`，确保多账号来回切换不再重复弹窗。
+10. **头像代理拉取与 Base64 本地持久化**：
+   - 原因：Antigravity 渲染进程直连 `lh3.googleusercontent.com` 受网络环境限制会超时失败。通过后端代理隧道在授权或初始化时将远程头像转为 `data:image/...;base64` 格式保存，使前端无需外网请求即可秒开显示头像。

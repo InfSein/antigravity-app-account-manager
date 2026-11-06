@@ -10,19 +10,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 
-const LOG_FILE = 'C:\\Users\\InfSein\\.gemini\\antigravity\\brain\\f2cafeb6-7448-4b97-8a28-e9b687b7ba45\\scratch\\daemon_live.log';
+const { CdpInjector } = require(path.join(__dirname, '..', '..', 'src', 'cdp_injector.js'));
+const { DAEMON_PID_FILE, AGY_CONFIG_DIR, LOG_FILE } = require(path.join(__dirname, '..', '..', 'src', 'constants.js'));
+
 function log(msg) {
-  const str = `[${new Date().toISOString()}] ${msg}\n`;
+  const str = `[${new Date().toISOString()}] [Daemon] ${msg}\n`;
   try {
+    if (!fs.existsSync(AGY_CONFIG_DIR)) {
+      fs.mkdirSync(AGY_CONFIG_DIR, { recursive: true });
+    }
     fs.appendFileSync(LOG_FILE, str, 'utf8');
   } catch {}
   console.log(msg);
 }
 
 log(`[AccountManager Daemon] 启动中, PID: ${process.pid}`);
-
-const { CdpInjector } = require(path.join(__dirname, '..', '..', 'src', 'cdp_injector.js'));
-const { DAEMON_PID_FILE, AGY_CONFIG_DIR } = require(path.join(__dirname, '..', '..', 'src', 'constants.js'));
 
 try {
   if (!fs.existsSync(AGY_CONFIG_DIR)) {

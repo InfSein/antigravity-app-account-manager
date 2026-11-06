@@ -9,7 +9,14 @@ const {
   AGY_CONFIG_DIR,
   QUOTA_CACHE_FILE
 } = require('./constants');
-const { readCurrentStoredToken } = require('./credential_manager');
+const {
+  readCurrentStoredToken,
+  extractProfileFromIdToken
+} = require('./credential_manager');
+const {
+  fetchAvatarAsDataUrl,
+  fetchGoogleUserInfo
+} = require('./oauth_service');
 
 /**
  * 确保存储目录存在
@@ -51,7 +58,16 @@ function saveStore(data) {
   const tempFile = `${STORE_FILE}.tmp.${Date.now()}`;
   try {
     fs.writeFileSync(tempFile, jsonStr, { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(tempFile, STORE_FILE);
+    // Windows 下 rename 覆盖已有文件可能抛错，先删除再 rename 或直接写入
+    try {
+      if (fs.existsSync(STORE_FILE)) {
+        fs.unlinkSync(STORE_FILE);
+      }
+      fs.renameSync(tempFile, STORE_FILE);
+    } catch {
+      fs.writeFileSync(STORE_FILE, jsonStr, { encoding: 'utf8', mode: 0o600 });
+      try { fs.unlinkSync(tempFile); } catch {}
+    }
   } catch (err) {
     fs.writeFileSync(STORE_FILE, jsonStr, { encoding: 'utf8', mode: 0o600 });
   }
@@ -93,33 +109,49 @@ function initAccountStore() {
   let modified = false;
 
   // 1. 如果系统当前有登录的账号，确保它保存在 store 中
-  if (currentToken && currentToken.id_token_email) {
-    const currentEmail = currentToken.id_token_email.trim();
+  const currentEmail = (currentToken && (currentToken.id_token_email || currentToken.email || '')) ? (currentToken.id_token_email || currentToken.email).trim() : '';
+
+  if (currentEmail) {
     const existingIndex = store.accounts.findIndex(a => a.email.toLowerCase() === currentEmail.toLowerCase());
 
     const cacheAccounts = readQuotaCacheAccounts();
     const matchedCache = cacheAccounts.find(c => c.email.toLowerCase() === currentEmail.toLowerCase());
 
+    const innerTokens = (currentToken.token) || currentToken;
+    const jwtProfile = extractProfileFromIdToken(innerTokens.id_token);
+    const existingPic = existingIndex >= 0 ? (store.accounts[existingIndex].picture || '') : '';
+    const existingName = existingIndex >= 0 ? (store.accounts[existingIndex].name || '') : '';
+
     const accountObj = {
       email: currentEmail,
-      name: (matchedCache && matchedCache.name) || currentEmail.split('@')[0],
-      picture: '',
-      planName: (matchedCache && matchedCache.planName) || 'Pro',
-      addedAt: new Date().toISOString(),
+      name: (matchedCache && matchedCache.name) || jwtProfile.name || existingName || currentEmail.split('@')[0],
+      picture: existingPic.startsWith('data:') ? existingPic : (jwtProfile.picture || existingPic || ''),
+      planName: (matchedCache && matchedCache.planName) || (existingIndex >= 0 ? store.accounts[existingIndex].planName : 'Pro'),
+      addedAt: existingIndex >= 0 ? store.accounts[existingIndex].addedAt : new Date().toISOString(),
       lastActiveAt: new Date().toISOString(),
       tokens: {
-        access_token: currentToken.token.access_token || '',
-        refresh_token: currentToken.token.refresh_token || '',
-        expiry: currentToken.token.expiry || '',
-        expires_in: currentToken.token.expires_in || 3599,
-        token_type: currentToken.token.token_type || 'Bearer'
+        access_token: innerTokens.access_token || '',
+        refresh_token: innerTokens.refresh_token || '',
+        expiry: innerTokens.expiry || '',
+        expires_in: innerTokens.expires_in || 3599,
+        token_type: innerTokens.token_type || 'Bearer',
+        id_token: innerTokens.id_token || ''
       }
     };
 
     if (existingIndex >= 0) {
-      // 更新现有账号的 token
-      store.accounts[existingIndex].tokens = accountObj.tokens;
-      store.accounts[existingIndex].lastActiveAt = new Date().toISOString();
+      // 保持原有有效 refresh_token（若新 token 没带 refresh_token）
+      if (!accountObj.tokens.refresh_token && store.accounts[existingIndex].tokens && store.accounts[existingIndex].tokens.refresh_token) {
+        accountObj.tokens.refresh_token = store.accounts[existingIndex].tokens.refresh_token;
+      }
+      store.accounts[existingIndex] = {
+        ...store.accounts[existingIndex],
+        name: accountObj.name || store.accounts[existingIndex].name,
+        picture: accountObj.picture || store.accounts[existingIndex].picture,
+        lastActiveAt: accountObj.lastActiveAt,
+        tokens: accountObj.tokens
+      };
+      modified = true;
     } else {
       // 首次添加当前账号
       store.accounts.push(accountObj);
@@ -159,7 +191,7 @@ function getPublicAccounts() {
       planName: acc.planName || '',
       addedAt: acc.addedAt,
       lastActiveAt: acc.lastActiveAt,
-      hasValidToken: !!(acc.tokens && acc.tokens.refresh_token)
+      hasValidToken: !!(acc.tokens && (acc.tokens.refresh_token || acc.tokens.access_token))
     }))
   };
 }
@@ -176,12 +208,21 @@ function upsertAccount(email, name, picture, tokens, planName = '') {
   const now = new Date().toISOString();
   if (idx >= 0) {
     const existing = store.accounts[idx];
+    const mergedTokens = {
+      ...(existing.tokens || {}),
+      ...(tokens || {})
+    };
+    // 如果新 tokens 缺少 refresh_token，必须继承现有的
+    if (!tokens || !tokens.refresh_token) {
+      mergedTokens.refresh_token = (existing.tokens && existing.tokens.refresh_token) || '';
+    }
+
     store.accounts[idx] = {
       ...existing,
       name: name || existing.name,
       picture: picture || existing.picture,
       planName: planName || existing.planName,
-      tokens: tokens || existing.tokens,
+      tokens: mergedTokens,
       lastActiveAt: now
     };
   } else {
@@ -240,12 +281,63 @@ function removeAccount(email) {
   }
 
   // 如果删除的是当前激活账号，重新指派激活账号
+  let nextEmailToSwitch = null;
   if (store.activeEmail.toLowerCase() === normalized) {
     store.activeEmail = store.accounts.length > 0 ? store.accounts[0].email : '';
+    nextEmailToSwitch = store.activeEmail;
   }
 
   saveStore(store);
-  return true;
+  return { success: true, nextEmailToSwitch };
+}
+
+/**
+ * 检查并补全所有已保存账号的本地 Base64 头像数据
+ * 若账号只有远程 http/https 链接或尚未提取 id_token 头像，则通过代理下载转为 data:URI 持久化
+ */
+async function ensureAccountsAvatars() {
+  const store = loadRawStore();
+  let modified = false;
+
+  for (const acc of store.accounts) {
+    if (acc.picture && acc.picture.startsWith('data:')) {
+      continue;
+    }
+
+    let remotePicUrl = (acc.picture && acc.picture.startsWith('http')) ? acc.picture : '';
+    if (!remotePicUrl && acc.tokens && acc.tokens.id_token) {
+      const profile = extractProfileFromIdToken(acc.tokens.id_token);
+      if (profile.picture) remotePicUrl = profile.picture;
+      if (!acc.name && profile.name) {
+        acc.name = profile.name;
+        modified = true;
+      }
+    }
+
+    if (!remotePicUrl && acc.tokens && acc.tokens.access_token) {
+      try {
+        const info = await fetchGoogleUserInfo(acc.tokens.access_token);
+        if (info && info.picture) remotePicUrl = info.picture;
+        if (info && info.name && (!acc.name || acc.name === acc.email.split('@')[0])) {
+          acc.name = info.name;
+          modified = true;
+        }
+      } catch {}
+    }
+
+    if (remotePicUrl) {
+      const dataUrl = await fetchAvatarAsDataUrl(remotePicUrl);
+      if (dataUrl) {
+        acc.picture = dataUrl;
+        modified = true;
+      }
+    }
+  }
+
+  if (modified) {
+    saveStore(store);
+  }
+  return modified;
 }
 
 module.exports = {
@@ -256,5 +348,6 @@ module.exports = {
   upsertAccount,
   setActiveAccount,
   getAccountTokens,
-  removeAccount
+  removeAccount,
+  ensureAccountsAvatars
 };

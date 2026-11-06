@@ -1,5 +1,5 @@
 /**
- * Google OAuth 登录授权与 Token 刷新模块 (带深度调试日志)
+ * Google OAuth 登录授权与 Token 刷新模块 (带深度调试日志与代理自适应)
  */
 const http = require('http');
 const https = require('https');
@@ -14,14 +14,18 @@ const {
   GOOGLE_AUTH_URL,
   GOOGLE_TOKEN_URL,
   GOOGLE_USERINFO_URL,
-  GOOGLE_SCOPES
+  GOOGLE_SCOPES,
+  AGY_CONFIG_DIR
 } = require('./constants');
 
-const DEBUG_LOG_FILE = 'C:\\Users\\InfSein\\.gemini\\antigravity\\brain\\f2cafeb6-7448-4b97-8a28-e9b687b7ba45\\scratch\\oauth_debug.log';
+const DEBUG_LOG_FILE = path.join(AGY_CONFIG_DIR, 'oauth_debug.log');
 
 function debugLog(...args) {
   const line = `[${new Date().toISOString()}] ${args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')}\n`;
   try {
+    if (!fs.existsSync(AGY_CONFIG_DIR)) {
+      fs.mkdirSync(AGY_CONFIG_DIR, { recursive: true });
+    }
     fs.appendFileSync(DEBUG_LOG_FILE, line, 'utf8');
   } catch {}
   console.log(...args);
@@ -197,7 +201,8 @@ async function refreshAccessToken(refreshToken) {
     token_type: parsed.token_type || 'Bearer',
     expires_in: parsed.expires_in || 3599,
     expiry: new Date(Date.now() + (parsed.expires_in || 3599) * 1000).toISOString(),
-    id_token: parsed.id_token
+    id_token: parsed.id_token || '',
+    refresh_token: parsed.refresh_token || refreshToken // 若未返回新 refresh_token 则保持原有的
   };
 }
 
@@ -240,7 +245,7 @@ async function exchangeCodeForTokens(code, redirectUri, codeVerifier) {
     token_type: parsed.token_type || 'Bearer',
     expires_in: parsed.expires_in || 3599,
     expiry: new Date(Date.now() + (parsed.expires_in || 3599) * 1000).toISOString(),
-    id_token: parsed.id_token
+    id_token: parsed.id_token || ''
   };
 }
 
@@ -263,6 +268,99 @@ async function fetchGoogleUserInfo(accessToken) {
 }
 
 /**
+ * 通过系统代理拉取远程头像并转为本地 Base64 Data URL，避免渲染进程无法直连 Google 头像服务器
+ */
+function fetchAvatarAsDataUrl(targetUrl) {
+  return new Promise((resolve) => {
+    if (!targetUrl || typeof targetUrl !== 'string') return resolve('');
+    if (targetUrl.startsWith('data:')) return resolve(targetUrl);
+    if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) return resolve('');
+
+    try {
+      const u = new URL(targetUrl);
+      const proxy = detectSystemProxy();
+      const port = u.port ? parseInt(u.port, 10) : 443;
+      const headers = {
+        'Host': u.hostname,
+        'User-Agent': 'Mozilla/5.0'
+      };
+
+      const handleRes = (res) => {
+        if (res.statusCode !== 200) return resolve('');
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => {
+          try {
+            const buf = Buffer.concat(chunks);
+            if (buf.length === 0) return resolve('');
+            const mime = (res.headers['content-type'] || 'image/jpeg').split(';')[0].trim();
+            resolve(`data:${mime};base64,${buf.toString('base64')}`);
+          } catch {
+            resolve('');
+          }
+        });
+      };
+
+      const doDirect = () => {
+        const req = https.request({
+          hostname: u.hostname,
+          port,
+          path: u.pathname + u.search,
+          method: 'GET',
+          headers,
+          timeout: 6000
+        }, handleRes);
+        req.on('error', () => resolve(''));
+        req.on('timeout', () => { req.destroy(); resolve(''); });
+        req.end();
+      };
+
+      if (!proxy) return doDirect();
+
+      const p = new URL(proxy);
+      const connectReq = http.request({
+        host: p.hostname,
+        port: p.port,
+        method: 'CONNECT',
+        path: `${u.hostname}:${port}`,
+        timeout: 6000
+      });
+
+      connectReq.on('connect', (res, socket) => {
+        if (res.statusCode !== 200) {
+          socket.destroy();
+          return doDirect();
+        }
+        const tlsSocket = tls.connect({
+          socket,
+          servername: u.hostname
+        }, () => {
+          const clientReq = https.request({
+            hostname: u.hostname,
+            port,
+            path: u.pathname + u.search,
+            method: 'GET',
+            headers,
+            createConnection: () => tlsSocket,
+            timeout: 6000
+          }, handleRes);
+          clientReq.on('error', () => resolve(''));
+          clientReq.on('timeout', () => { clientReq.destroy(); resolve(''); });
+          clientReq.end();
+        });
+        tlsSocket.on('error', () => resolve(''));
+      });
+
+      connectReq.on('error', () => doDirect());
+      connectReq.on('timeout', () => { connectReq.destroy(); doDirect(); });
+      connectReq.end();
+    } catch {
+      resolve('');
+    }
+  });
+}
+
+/**
  * 打开系统默认浏览器
  */
 function openInBrowser(url) {
@@ -278,14 +376,21 @@ function openInBrowser(url) {
 }
 
 /**
- * 生成授权成功后展示的友好页面 HTML
+ * 生成授权成功后展示的友好页面 HTML（支持中英文）
  */
-function getSuccessHtml(email) {
+function getSuccessHtml(email, lang = 'en') {
+  const isZh = lang === 'zh';
+  const title = isZh ? 'Antigravity 账号授权成功' : 'Antigravity Account Authorized';
+  const heading = isZh ? '授权成功' : 'Authorization Successful';
+  const sub = isZh ? 'Google 账号已成功授权：' : 'Google account authorized:';
+  const desc = isZh
+    ? 'Antigravity 已自动保存该账号并完成切换。<br>您可以关闭此浏览器标签页并返回客户端。'
+    : 'Antigravity has saved and switched to this account.<br>You may now close this tab and return to the app.';
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="${isZh ? 'zh-CN' : 'en'}">
 <head>
   <meta charset="UTF-8">
-  <title>Antigravity 账号授权成功</title>
+  <title>${title}</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -326,10 +431,10 @@ function getSuccessHtml(email) {
 <body>
   <div class="card">
     <div class="icon">✓</div>
-    <h2>授权成功</h2>
-    <p>Google 账号已成功授权：</p>
+    <h2>${heading}</h2>
+    <p>${sub}</p>
     <p><span class="email">${email}</span></p>
-    <p style="margin-top: 24px;">Antigravity 已自动保存该账号并完成切换。<br>您可以关闭此浏览器标签页并返回客户端。</p>
+    <p style="margin-top: 24px;">${desc}</p>
   </div>
 </body>
 </html>`;
@@ -338,7 +443,7 @@ function getSuccessHtml(email) {
 /**
  * 启动完整的 Google OAuth 网页授权流程
  */
-function startOAuthFlow() {
+function startOAuthFlow(lang = 'en') {
   return new Promise((resolve, reject) => {
     debugLog('startOAuthFlow called');
     const state = crypto.randomBytes(16).toString('hex');
@@ -364,8 +469,8 @@ function startOAuthFlow() {
         if (!code || returnedState !== state) {
           debugLog('Invalid callback params:', { code: !!code, returnedState, state });
           res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-          res.end('授权回调参数无效或已过期，请重试。');
-          cleanup(new Error('回调状态验证失败'));
+          res.end(lang === 'zh' ? '授权回调参数无效或已过期，请重试。' : 'Invalid or expired authorization callback parameters. Please try again.');
+          cleanup(new Error(lang === 'zh' ? '回调状态验证失败' : 'Callback state validation failed'));
           return;
         }
 
@@ -378,8 +483,15 @@ function startOAuthFlow() {
         const userInfo = await fetchGoogleUserInfo(tokens.access_token);
         debugLog('User info obtained:', userInfo.email, userInfo.name);
 
+        if (userInfo.picture && userInfo.picture.startsWith('http')) {
+          const avatarDataUrl = await fetchAvatarAsDataUrl(userInfo.picture);
+          if (avatarDataUrl) {
+            userInfo.picture = avatarDataUrl;
+          }
+        }
+
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(getSuccessHtml(userInfo.email));
+        res.end(getSuccessHtml(userInfo.email, lang));
 
         cleanup(null, { tokens, userInfo });
       } catch (err) {
@@ -440,5 +552,6 @@ module.exports = {
   detectSystemProxy,
   refreshAccessToken,
   fetchGoogleUserInfo,
+  fetchAvatarAsDataUrl,
   startOAuthFlow
 };
